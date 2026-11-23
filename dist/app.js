@@ -201,6 +201,8 @@
     const { read, known, review, solved, percent } = summary();
     const { topics, terms, tasks, sources = [] } = activeCourse;
     const builtIn = activeCourse.id === demo.id;
+    const coverTitle = activeCourse.subtitle || "Начни с лекции";
+    const longTitle = coverTitle.length > 39 || coverTitle.split(/\s+/).some(word => word.length > 16);
     return `
       <section class="page-intro"><p class="eyebrow"><span class="eyebrow-dot"></span> МОЯ ПОДГОТОВКА</p>
         <h1>${escape(activeCourse.title)}</h1>
@@ -211,7 +213,7 @@
           <section class="hero">
             <div class="hero-content">
               <span class="hero-tag">${icon(builtIn ? "spark" : "book")}${builtIn ? "ГОТОВЫЙ КУРС" : "МОЙ КУРС"}</span>
-              <h2 class="hero-title">${builtIn ? "Базы данных<br>и не только" : escape(activeCourse.subtitle || "Начни с лекции")}</h2>
+              <h2 class="hero-title ${!builtIn && longTitle ? "is-long" : ""}">${builtIn ? "Базы данных<br>и не только" : escape(coverTitle)}</h2>
               <p class="hero-description">${builtIn ? "От таблиц и нормальных форм до прикладных программ и ИИ. Читай, вспоминай и решай задачи в своём темпе." : "Прочитай конспект, вспомни определения и проверь себя на заданиях."}</p>
               <div class="hero-actions"><a class="button hero-primary" href="#theory">${icon("book")}${read ? "Открыть лекцию" : "Начать с лекции"}</a>
                 <a class="button hero-secondary" href="#quiz">${icon("bolt")}Проверить себя</a></div>
@@ -258,6 +260,14 @@
     return activeCourse.topics.find(topic => topic.id === id)?.title || "";
   }
 
+  function studyBlocks(blocks) {
+    return window.StudyContent.renderBlocks(blocks);
+  }
+
+  function studyPhotos(key, label) {
+    return window.StudyAttachments.renderSlot(activeCourse.id, key, label);
+  }
+
   function renderTheory() {
     const topics = activeCourse.topics;
     const topic = topics.find(item => item.id === topicId) || topics[0];
@@ -269,11 +279,13 @@
       <article class="content-card card">
         <div class="question-meta"><span class="pill">${icon("book")}Тема ${topics.indexOf(topic) + 1} из ${topics.length}</span>
           ${read ? `<span class="pill is-good">${icon("check")}Прочитано</span>` : ""}</div>
-        <h2>${escape(topic.title)}</h2>
-        ${topic.intro ? `<p class="topic-intro">${escape(topic.intro)}</p>` : ""}
-        ${topic.sections.map(section => `<section class="reading-section">
-          <h3>${escape(section.title)}</h3><p class="preserve-lines">${escape(section.text)}</p>
-          ${section.example ? `<div class="lesson-example"><strong>Пример</strong><p class="preserve-lines">${escape(section.example)}</p></div>` : ""}
+        <h2 data-study-math>${escape(topic.title)}</h2>
+        ${topic.intro ? `<p class="topic-intro" data-study-math>${escape(topic.intro)}</p>` : ""}
+        ${topic.sections.map((section, index) => `<section class="reading-section">
+          <h3 data-study-math>${escape(section.title)}</h3><p class="preserve-lines" data-study-math>${escape(section.text)}</p>
+          ${section.example ? `<div class="lesson-example"><strong>Пример</strong><p class="preserve-lines" data-study-math>${escape(section.example)}</p></div>` : ""}
+          ${studyBlocks(section.blocks)}
+          ${studyPhotos(`topic:${topic.id}:section:${index}`, "Фото к разделу")}
         </section>`).join("")}
         <div class="inline-actions lesson-actions">
           <button type="button" class="button primary" data-action="mark-topic">${icon("check")}${read ? "Снять отметку" : "Отметить прочитанным"}</button>
@@ -404,7 +416,7 @@
 
   function quizHint(current) {
     if (!quiz.hint || quiz.revealed) return "";
-    return `<div class="hint-box">${icon("bulb")}<p>${escape(current.hint || "Вспомни пример из лекции и попробуй вывести определение через него.")}</p></div>`;
+    return `<div class="hint-box">${icon("bulb")}<p data-study-math>${escape(current.hint || "Вспомни пример из лекции и попробуй вывести определение через него.")}</p></div>`;
   }
 
   function quizScoreButtons(allowKnown) {
@@ -415,8 +427,8 @@
   function renderFlashcard(current) {
     return `<button type="button" class="flashcard ${quiz.revealed ? "is-flipped" : ""}" data-action="flip-card">
       <span class="flashcard-label">${quiz.revealed ? "Определение" : "Термин"}</span>
-      <strong class="flashcard-title">${escape(current.term)}</strong>
-      ${quiz.revealed ? `<span class="flashcard-definition preserve-lines">${escape(current.definition)}</span>` : ""}
+      <strong class="flashcard-title" data-study-math>${escape(current.term)}</strong>
+      ${quiz.revealed ? `<span class="flashcard-definition preserve-lines" data-study-math>${escape(current.definition)}</span>` : ""}
       <span class="flashcard-cue">${icon("repeat")}${quiz.revealed ? "К термину" : "Перевернуть карточку"}</span>
     </button>
     <div class="inline-actions flashcard-actions">${quiz.revealed ? quizScoreButtons(true) : quizHintButton()}</div>
@@ -425,7 +437,7 @@
 
   function renderWrittenQuestion(current) {
     const hasAnswer = Boolean(quiz.answer.trim());
-    return `<p class="prompt-label">Что означает этот термин?</p><h2>${escape(current.term)}</h2>
+    return `<p class="prompt-label">Что означает этот термин?</p><h2 data-study-math>${escape(current.term)}</h2>
       <form id="quiz-form">
         <label class="form-label" for="quiz-answer">Твоё определение</label>
         <textarea class="answer-input" id="quiz-answer" rows="4" maxlength="4000" placeholder="Напиши так, как объяснил бы одногруппнику…" ${quiz.revealed ? "readonly" : ""}>${escape(quiz.answer)}</textarea>
@@ -437,13 +449,13 @@
       </form>
       ${quizHint(current)}
       ${quiz.revealed ? `<div class="feedback" aria-live="polite">
-        <strong>Пример определения</strong><p class="preserve-lines">${escape(current.definition)}</p>
+        <strong>Пример определения</strong><p class="preserve-lines" data-study-math>${escape(current.definition)}</p>
         ${hasAnswer ? gradeCopy(grade(quiz.answer, current.checks)) : "<p>Прочитай определение. Можешь отметить термин, чтобы встретить его снова.</p>"}
       </div><div class="inline-actions">${quizScoreButtons(hasAnswer)}</div>` : ""}`;
   }
 
   function taskDraft(id) {
-    return practiceDrafts[id] ||= { answer: "", hints: 0, revealed: false };
+    return practiceDrafts[id] ||= { hints: 0, revealed: false };
   }
 
   function renderPractice() {
@@ -454,27 +466,33 @@
     const records = getRecords().tasks;
     const draft = taskDraft(task.id);
     const next = tasks[tasks.indexOf(task) + 1];
-    const result = grade(draft.answer, task.checks);
+    const writtenAnswer = window.StudyAnswers.readText(activeCourse.id, task);
+    const result = grade(writtenAnswer, task.checks);
     return heading + `<div class="screen-grid">
       <article class="content-card card task-card">
         <div class="question-meta"><span class="pill">${icon("layers")}${escape(task.difficulty || "Практика")}</span>
           <span class="pill muted">${escape(topicName(task.topicId))}</span>
           ${records[task.id] ? `<span class="pill is-good">${icon("check")}Решено</span>` : ""}</div>
-        <h2>${escape(task.title)}</h2>
-        ${task.scenario ? `<div class="task-scenario preserve-lines">${escape(task.scenario)}</div>` : ""}
-        <p class="task-prompt preserve-lines">${escape(task.prompt)}</p>
+        <h2 data-study-math>${escape(task.title)}</h2>
+        ${task.scenario ? `<div class="task-scenario preserve-lines" data-study-math>${escape(task.scenario)}</div>` : ""}
+        ${studyBlocks(task.conditionBlocks)}
+        ${studyPhotos(`task:${task.id}:condition`, "Фото к условию")}
+        <p class="task-prompt preserve-lines" data-study-math>${escape(task.prompt)}</p>
         <form id="task-form">
-          <label class="form-label" for="task-answer">Твой ход решения</label>
-          <textarea class="answer-input" id="task-answer" rows="5" maxlength="8000" placeholder="Напиши шаги решения или запиши схему таблиц…" ${draft.revealed ? "readonly" : ""}>${escape(draft.answer)}</textarea>
+          ${window.StudyAnswers.render(activeCourse.id, task, draft.revealed)}
           <div class="inline-actions">
             ${!draft.revealed ? '<button class="button primary" type="submit">Сверить с разбором</button>' : ""}
             ${!draft.revealed && draft.hints < task.hints.length ? `<button class="button secondary" type="button" data-action="task-hint">${icon("bulb")}Подсказка${draft.hints ? " ещё" : ""}</button>` : ""}
           </div>
         </form>
-        ${draft.hints && !draft.revealed ? `<div class="hint-box">${icon("bulb")}<ol>${task.hints.slice(0, draft.hints).map(hint => `<li>${escape(hint)}</li>`).join("")}</ol></div>` : ""}
+        ${studyPhotos(`task:${task.id}:answer`, "Фото своего решения")}
+        ${draft.hints && !draft.revealed ? `<div class="hint-box">${icon("bulb")}<ol>${task.hints.slice(0, draft.hints).map(hint => `<li data-study-math>${escape(hint)}</li>`).join("")}</ol></div>` : ""}
         ${draft.revealed ? `<div class="feedback" aria-live="polite">
-          <strong>Разбор решения</strong><p class="preserve-lines">${escape(task.solution)}</p>
-          ${draft.answer ? gradeCopy(result) : "<p>Если решал на бумаге, сверь свой ход с разбором.</p>"}
+          <strong>Разбор решения</strong><p class="preserve-lines" data-study-math>${escape(task.solution)}</p>
+          ${studyBlocks(task.solutionBlocks)}
+          ${studyPhotos(`task:${task.id}:solution`, "Фото к разбору")}
+          <p>Сверь свой ход решения с образцом.</p>
+          ${writtenAnswer.trim() ? `<div class="written-answer-feedback"><strong>Текстовая часть ответа</strong>${gradeCopy(result)}</div>` : ""}
         </div><div class="inline-actions">
           <button type="button" class="button ${records[task.id] ? "secondary" : "primary"}" data-action="mark-task">${icon("check")}${records[task.id] ? "Снять отметку" : "Отметить решённой"}</button>
           ${next ? `<button class="button secondary" type="button" data-task="${escape(next.id)}">Следующая задача</button>` : '<a class="button secondary" href="#home">К обзору</a>'}
@@ -502,96 +520,10 @@
     renderChrome();
     const pages = { home: renderHome, theory: renderTheory, quiz: renderQuiz, practice: renderPractice, sources: renderSources };
     page.innerHTML = pages[view]();
-    if (view === "home") drawHero();
-  }
-
-  function drawHero() {
-    const canvas = document.querySelector("#hero-canvas");
-    const ctx = canvas?.getContext("2d");
-    if (!ctx) return;
-    ctx.save();
-    ctx.scale(2, 2);
-    const gold = "#efbf43";
-    const cream = "#ffe7bc";
-    const glow = ctx.createRadialGradient(195, 141, 15, 195, 141, 148);
-    glow.addColorStop(0, "rgba(255, 188, 80, .32)");
-    glow.addColorStop(1, "rgba(255, 188, 80, 0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, 360, 300);
-    ctx.fillStyle = "rgba(255, 231, 188, .27)";
-    for (let x = 26; x < 355; x += 16) {
-      for (let y = 21; y < 285; y += 16) {
-        ctx.beginPath();
-        ctx.arc(x, y, .75, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    function shape(points, fill, stroke) {
-      ctx.beginPath();
-      points.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-      ctx.closePath();
-      ctx.fillStyle = fill;
-      ctx.fill();
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-    }
-
-    function slab(y, top) {
-      const stroke = top ? cream : "#e4a462";
-      shape([[89, y], [195, y + 48], [297, y - 3], [297, y + 15], [195, y + 66], [89, y + 17]], "#7c3323", stroke);
-      shape([[195, y + 48], [297, y - 3], [297, y + 15], [195, y + 66]], "#aa5a34", stroke);
-      const gradient = ctx.createLinearGradient(90, y, 295, y);
-      gradient.addColorStop(0, top ? "#d07f39" : "#aa562e");
-      gradient.addColorStop(.58, top ? "#e9a549" : "#c56c36");
-      gradient.addColorStop(1, top ? gold : "#e49a4e");
-      shape([[89, y], [191, y - 51], [297, y - 3], [195, y + 48]], gradient, stroke);
-      for (let i = 0; i < 3; i++) {
-        ctx.fillStyle = i === 0 && top ? gold : "rgba(255, 231, 188, .65)";
-        ctx.beginPath();
-        ctx.arc(108 + i * 11, y + 17 + i * 5, 1.55, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    ctx.strokeStyle = "rgba(255, 231, 188, .45)";
-    ctx.setLineDash([3, 5]);
-    ctx.beginPath();
-    ctx.ellipse(192, 155, 143, 59, -.22, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    slab(169, false);
-    slab(140, false);
-    slab(111, true);
-
-    const cells = [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [0, 2], [1, 2], [2, 2]];
-    for (const [col, row] of cells) {
-      const x = 136 + col * 19 + row * 20;
-      const y = 109 - col * 9 + row * 9;
-      const accent = col === 2 && row === 0;
-      shape([[x, y], [x + 16, y - 8], [x + 33, y], [x + 17, y + 8]], accent ? cream : "#c97a3b", accent ? "#fff4d8" : "#ffda9e");
-    }
-
-    function star(x, y, size, color) {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(x, y - size);
-      ctx.quadraticCurveTo(x + 1, y - 1, x + size, y);
-      ctx.quadraticCurveTo(x + 1, y + 1, x, y + size);
-      ctx.quadraticCurveTo(x - 1, y + 1, x - size, y);
-      ctx.quadraticCurveTo(x - 1, y - 1, x, y - size);
-      ctx.fill();
-    }
-    star(288, 61, 14, gold);
-    star(306, 44, 5, cream);
-    star(63, 168, 7, cream);
-    star(286, 218, 7, gold);
-    ctx.fillStyle = cream;
-    ctx.beginPath();
-    ctx.arc(62, 115, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    window.StudyContent.hydrate(page);
+    window.StudyAttachments.hydrate(page);
+    window.StudyAnswers.hydrate(page);
+    if (view === "home") window.StudyCovers.draw(page.querySelector("#hero-canvas"), activeCourse);
   }
 
   function openDialog(content, opener) {
@@ -904,7 +836,6 @@
       quiz.answer = event.target.value;
       event.target.setCustomValidity("");
     }
-    if (event.target.id === "task-answer") taskDraft(taskId).answer = event.target.value;
   });
 
   document.addEventListener("change", event => {

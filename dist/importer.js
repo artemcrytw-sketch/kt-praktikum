@@ -252,6 +252,38 @@
       return fragments.join('').trim();
     }
 
+    function wordCells(row) {
+      return [...row.children].filter((child) => child.namespaceURI === namespace && child.localName === 'tc');
+    }
+
+    function wordRowText(row) {
+      return wordCells(row).map((cell) =>
+        [...cell.getElementsByTagNameNS(namespace, 'p')].map(paragraphText).join(' '));
+    }
+
+    function markdownWordTable(node) {
+      const rows = [...node.children].filter((child) => child.namespaceURI === namespace && child.localName === 'tr');
+      if (rows.length === 0 || ['tbl', 'vMerge', 'hMerge', 'gridBefore', 'gridAfter'].some((tag) =>
+        node.getElementsByTagNameNS(namespace, tag).length)) return null;
+      if (node.getElementsByTagNameNS(namespace, 'tr').length !== rows.length ||
+        rows.some((row) => row.getElementsByTagNameNS(namespace, 'tc').length !== wordCells(row).length)) return null;
+      if ([...node.getElementsByTagNameNS(namespace, 'gridSpan')].some((item) =>
+        item.getAttributeNS(namespace, 'val') !== '1')) return null;
+      if (node.getElementsByTagNameNS(namespace, 'tblHeader').length > 1) return null;
+      const cells = rows.map(wordRowText);
+      const count = cells[0].length;
+      if (count < 1 || count > 12 || cells.some((row) => row.length !== count)) return null;
+      const firstRowIsHeader = cells.length > 1 && cells[0].every((cell) => cell.trim()) &&
+        (rows[0].getElementsByTagNameNS(namespace, 'tblHeader').length || cells[0].some((cell) => /\p{L}/u.test(cell)));
+      const headers = firstRowIsHeader ? cells[0] : cells[0].map((_, index) => `Столбец ${index + 1}`);
+      const bodyRows = firstRowIsHeader ? cells.slice(1) : cells;
+      const markdownRow = (row) => {
+        const values = row.map((cell) => cell.replace(/[\r\n\t]+/gu, ' ').replace(/(\\*)\|/gu, (_, slash) => slash + slash + '\\|'));
+        return `| ${values.join(' | ')} |`;
+      };
+      return ['', markdownRow(headers), markdownRow(headers.map(() => '---')), ...bodyRows.map(markdownRow), ''];
+    }
+
     function linesFor(node) {
       if (node.namespaceURI === namespace && node.localName === 'p') {
         const text = paragraphText(node);
@@ -261,8 +293,11 @@
         return /^(heading|заголовок|title)\s*\d*$/iu.test(style) || outline ? [`## ${text}`] : [text];
       }
       if (node.namespaceURI === namespace && node.localName === 'tr') {
-        const cells = [...node.children].filter((child) => child.localName === 'tc');
-        return [cells.map((cell) => [...cell.getElementsByTagNameNS(namespace, 'p')].map(paragraphText).join(' ')).join(' | ')];
+        return [wordRowText(node).join(' | ')];
+      }
+      if (node.namespaceURI === namespace && node.localName === 'tbl') {
+        const table = markdownWordTable(node);
+        if (table) return table;
       }
       return [...node.children].flatMap(linesFor);
     }
@@ -320,6 +355,27 @@
     return typeof value === 'string' ? value.trim() : '';
   }
 
+  const coverThemes = new Set([
+    'database', 'recurrence', 'network', 'code', 'math', 'science', 'history', 'language', 'economics', 'general',
+  ]);
+  const answerModes = new Set(['text', 'table', 'drawing']);
+
+  function contentBlocks(data, key) {
+    const blocks = window.StudyContent?.normalizeBlocks(data[key]);
+    return blocks?.length ? { [key]: blocks } : {};
+  }
+
+  function taskAnswerFields(task) {
+    const answerMode = takeText(task.answerMode).toLowerCase();
+    const answerColumns = Array.isArray(task.answerColumns)
+      ? task.answerColumns.slice(0, 8).map((column) => takeText(column).slice(0, 100)).filter(Boolean)
+      : [];
+    return {
+      ...(answerModes.has(answerMode) ? { answerMode } : {}),
+      ...(answerColumns.length ? { answerColumns } : {}),
+    };
+  }
+
   function readStructured(text) {
     let data;
     try {
@@ -337,7 +393,10 @@
       topicIds.add(id);
       const sections = topic.sections.map((section) => {
         if (!takeText(section?.title) || !takeText(section.text)) throw new Error(invalid);
-        return { title: takeText(section.title), text: takeText(section.text), example: takeText(section.example) };
+        return {
+          title: takeText(section.title), text: takeText(section.text), example: takeText(section.example),
+          ...contentBlocks(section, 'blocks'),
+        };
       });
       return { id, title: takeText(topic.title), intro: takeText(topic.intro), sections };
     });
@@ -353,7 +412,9 @@
         return { ...map(row), topicId, ...(checks.length ? { checks } : {}) };
       });
     }
+    const coverTheme = takeText(data.coverTheme).toLowerCase();
     return {
+      ...(coverThemes.has(coverTheme) ? { coverTheme } : {}),
       title: takeText(data.title), subject: takeText(data.subject), subtitle: takeText(data.subtitle), topics,
       terms: rows(data.terms, ['term', 'definition'], (row) => ({
         term: takeText(row.term), definition: takeText(row.definition), hint: takeText(row.hint) || hintFor(row.definition),
@@ -362,6 +423,9 @@
         title: takeText(row.title), difficulty: takeText(row.difficulty) || 'Базовый',
         scenario: takeText(row.scenario), prompt: takeText(row.prompt), solution: takeText(row.solution),
         hints: Array.isArray(row.hints) ? row.hints.map(takeText).filter(Boolean) : [],
+        ...contentBlocks(row, 'conditionBlocks'),
+        ...contentBlocks(row, 'solutionBlocks'),
+        ...taskAnswerFields(row),
       })),
     };
   }
@@ -411,6 +475,63 @@
     return line.replace(/\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`/gu, (_, bold, under, code) => bold ?? under ?? code).trim();
   }
 
+  function pipeCells(line) {
+    const remaining = line.trim();
+    const cells = [];
+    let value = '';
+    let separators = 0;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const character = remaining[index];
+      if (character === '\\') {
+        const start = index;
+        while (remaining[index + 1] === '\\') index += 1;
+        const count = index - start + 1;
+        if (remaining[index + 1] !== '|') {
+          value += '\\'.repeat(count);
+        } else {
+          value += '\\'.repeat(Math.floor(count / 2));
+          if (count % 2) {
+            value += '|';
+            index += 1;
+          }
+        }
+      } else if (character === '|') {
+        cells.push(value.trim());
+        separators += 1;
+        value = '';
+      } else {
+        value += character;
+      }
+    }
+    if (!separators) return null;
+    if (remaining.startsWith('|')) cells.shift();
+    if (value || !remaining.endsWith('|')) cells.push(value.trim());
+    return cells;
+  }
+
+  function markdownTableAt(lines, start) {
+    if (!lines[start + 1]?.includes('|') || !lines[start]?.includes('|')) return null;
+    const columns = pipeCells(lines[start]);
+    const separators = pipeCells(lines[start + 1]);
+    if (!columns?.length || columns.length > 12 || columns.some((column) => !column) ||
+      separators?.length !== columns.length || !separators.every((cell) => /^:?-{3,}:?$/u.test(cell))) return null;
+    const blocks = [];
+    let end = start + 2;
+    let rows = [];
+    const titles = columns.map(displayLine);
+    for (; end < lines.length; end += 1) {
+      const row = pipeCells(lines[end]);
+      if (row?.length !== columns.length || /^(?:#{1,6}\s|[`~]{3})/u.test(lines[end].trim())) break;
+      rows.push(row.map(displayLine));
+      if (rows.length === 60) {
+        blocks.push({ type: 'table', columns: titles, rows });
+        rows = [];
+      }
+    }
+    if (rows.length) blocks.push({ type: 'table', columns: titles, rows });
+    return blocks.length ? { blocks, end } : null;
+  }
+
   function splitTopics(source) {
     const groups = [];
     const sourceTitle = source.name.replace(/\.[^.]+$/u, '').replace(/_/g, ' ');
@@ -421,8 +542,18 @@
       lines = [];
     }
     const rawLines = cleanText(source.text).split('\n');
-    for (const [index, rawLine] of rawLines.entries()) {
-      const line = rawLine.trim();
+    let fence = '';
+    for (let index = 0; index < rawLines.length; index += 1) {
+      const line = rawLines[index].trim();
+      const marker = line.match(/^(?:`{3,}|~{3,})/u)?.[0];
+      if (marker && !fence) fence = marker;
+      else if (marker && marker[0] === fence[0] && marker.length >= fence.length && !line.slice(marker.length).trim()) fence = '';
+      const table = !fence && markdownTableAt(rawLines, index);
+      if (table) {
+        lines.push(...table.blocks);
+        index = table.end - 1;
+        continue;
+      }
       const nextLine = rawLines[index + 1]?.trim() || rawLines[index + 2]?.trim() || '';
       const nextTitle = heading(line, nextLine);
       if (nextTitle && groups.length < 39) {
@@ -489,18 +620,31 @@
     const sections = [];
     let current = [];
     let length = 0;
+    let blocks = [];
     function flush() {
       const text = current.join('\n').trim();
-      if (text) {
+      if (text || blocks.length) {
         const firstTerm = definitionsFrom([current[0] ?? ''])[0]?.term;
         const possibleTitle = sentences(current[0] ?? '')[0]?.split(/\s+/u).slice(0, 7).join(' ').replace(/[,.:;]$/u, '');
-        const title = firstTerm || (sections.length && possibleTitle ? possibleTitle : 'Ключевые идеи');
-        sections.push({ title, text });
+        const title = text ? firstTerm || (sections.length && possibleTitle ? possibleTitle : 'Ключевые идеи') : 'Табличные данные';
+        sections.push({ title, text: text || 'Данные из исходного материала.', ...(blocks.length ? { blocks } : {}) });
       }
       current = [];
       length = 0;
+      blocks = [];
     }
     for (const line of lines) {
+      if (typeof line !== 'string') {
+        if (blocks.length >= 20) flush();
+        const last = sections.at(-1);
+        if (!current.length && !blocks.length && last && (last.blocks?.length ?? 0) < 20) {
+          (last.blocks ??= []).push(line);
+        } else {
+          blocks.push(line);
+        }
+        continue;
+      }
+      if (blocks.length && line) flush();
       const example = line.match(/^Пример(?:(?:\s+\d+)?[.:—–-])\s+(.+)$/iu);
       if (example && current.length) {
         flush();
@@ -598,7 +742,7 @@
       for (const group of splitTopics(source)) {
         const sections = makeSections(group.lines);
         if (!sections.length) continue;
-        const definitions = definitionsFrom(group.lines);
+        const definitions = definitionsFrom(group.lines.map((line) => typeof line === 'string' ? line : ''));
         const task = taskFor(group.title, sections, definitions);
         addTopic({ title: group.title, intro: introFor(sections, definitions), sections }, definitions, task ? [task] : []);
       }
@@ -610,6 +754,7 @@
       title: takeText(title) || structured?.title || 'Мои материалы',
       subject: structured?.subject || 'Подготовка к КТ',
       subtitle: structured?.subtitle || 'Конспект, определения и задания из твоих материалов.',
+      ...(structured?.coverTheme ? { coverTheme: structured.coverTheme } : {}),
       topics, terms, tasks,
       sources: sources.map((source) => ({ name: source.name, text: source.text })),
     };

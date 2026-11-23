@@ -11,6 +11,8 @@ const types = {
   ".mjs": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
   ".wasm": "application/wasm",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
 const server = http.createServer(async (request, response) => {
