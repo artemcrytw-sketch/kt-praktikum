@@ -95,8 +95,7 @@
   function render(courseId, task, locked) {
     const key = keyFor(courseId, task.id);
     const data = getDraft(key, task);
-    return `<section class="answer-workspace" data-answer-workspace="${escape(key)}" data-locked="${Boolean(locked)}" aria-labelledby="answer-workspace-title">
-      <p class="form-label" id="answer-workspace-title">Твой ход решения</p>
+    return `<section class="answer-workspace" data-answer-workspace="${escape(key)}" data-locked="${Boolean(locked)}" aria-label="Твой ход решения">
       <div class="answer-mode-buttons" role="group" aria-label="Как ответить">
         ${tools.map(([mode, label]) => `<button type="button" class="button secondary" data-answer-mode="${mode}" aria-pressed="${data.mode === mode}">${label}</button>`).join("")}
       </div>

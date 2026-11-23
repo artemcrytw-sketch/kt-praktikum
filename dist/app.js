@@ -35,13 +35,19 @@
     menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     stack: '<rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01m4-9h4m-4 9h4"/>',
+    list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
+    pen: '<path d="m14 5 5 5M5 19l4.8-1 10-10a2.1 2.1 0 0 0 0-3l-.9-.9a2.1 2.1 0 0 0-3 0l-10 10z"/>',
+    lock: '<rect x="5.5" y="10" width="13" height="10" rx="2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10m-4 4.5v2"/>',
+    chevron: '<path d="m7 9 5 5 5-5"/>',
   };
 
   let state = loadState();
   let activeCourse = [demo, ...state.courses].find(course => course.id === state.active) || demo;
-  let view = parseRoute();
-  let topicId = activeCourse.topics[0]?.id;
-  let taskId = activeCourse.tasks[0]?.id;
+  const practicePanels = [["condition", "Условие"], ["answer", "Ответ"], ["solution", "Разбор"]];
+  let view = "home";
+  let topicId;
+  let taskId;
+  let lessonContentsOpen = false;
   let mobileMenu = false;
   let quiz = newQuiz();
   let suspendedQuiz;
@@ -102,21 +108,73 @@
     return `${number} ${!teen && last === 1 ? forms[0] : !teen && last >= 2 && last <= 4 ? forms[1] : forms[2]}`;
   }
 
-  function parseRoute() {
-    const route = location.hash.slice(1);
-    return Object.hasOwn(routes, route) ? route : "home";
+  function parseRoute(hash) {
+    const [route, details] = hash.replace(/^#/, "").split("?", 2);
+    if (!Object.hasOwn(routes, route)) return null;
+    return { route, details: new URLSearchParams(details) };
   }
 
-  function navigate(next, { focus = true } = {}) {
-    if (!Object.hasOwn(routes, next)) return;
+  function routeHref(route, parameters) {
+    return `#${route}${parameters ? `?${new URLSearchParams(parameters)}` : ""}`;
+  }
+
+  function restoreCoursePosition() {
+    const records = getRecords();
+    topicId = activeCourse.topics.find(topic => topic.id === records.currentTopic)?.id || activeCourse.topics[0]?.id;
+    taskId = activeCourse.tasks.find(task => task.id === records.currentTask)?.id ||
+      activeCourse.tasks.find(task => !records.tasks[task.id])?.id || activeCourse.tasks[0]?.id;
+    lessonContentsOpen = false;
+  }
+
+  function rememberPosition(key, id) {
+    if (!id) return;
+    const records = getRecords();
+    if (records[key] === id) return;
+    records[key] = id;
+    saveState();
+  }
+
+  function showRoute(destination, focus = true) {
+    const previousView = view;
+    const previousTopic = topicId;
     mobileMenu = false;
-    view = next;
-    if (location.hash !== `#${next}`) history.pushState(null, "", `#${next}`);
-    render();
-    if (focus) {
+    view = destination.route;
+    let lessonPart;
+    if (view === "theory") {
+      const requestedTopic = destination.details.get("topic");
+      const current = activeCourse.topics.find(topic => topic.id === requestedTopic) ||
+        activeCourse.topics.find(topic => topic.id === topicId);
+      if (current) {
+        topicId = current.id;
+        const part = Number(destination.details.get("part"));
+        if (Number.isInteger(part) && part >= 1 && part <= current.sections.length) lessonPart = part;
+        rememberPosition("currentTopic", topicId);
+      }
+      if (previousView !== view || previousTopic !== topicId) lessonContentsOpen = false;
+    }
+    if (view === "practice") {
+      const requestedTask = destination.details.get("task");
+      taskId = activeCourse.tasks.find(task => task.id === requestedTask)?.id || taskId;
+      rememberPosition("currentTask", taskId);
+    }
+
+    const inPlaceJump = view === "theory" && previousView === view && previousTopic === topicId &&
+      lessonPart && page.querySelector(".lesson-layout");
+    if (!inPlaceJump) render();
+    if (lessonPart) {
+      focusLessonPart(lessonPart);
+    } else if (focus) {
       page.focus({ preventScroll: true });
       window.scrollTo(0, 0);
     }
+  }
+
+  function navigate(next, options = {}) {
+    const hash = next.startsWith("#") ? next : `#${next}`;
+    const destination = parseRoute(hash);
+    if (!destination) return;
+    if (location.hash !== hash) history.pushState(null, "", hash);
+    showRoute(destination, options.focus);
   }
 
   function newQuiz({ format = "cards", mode = "mixed", filter = "all", queue = [] } = {}) {
@@ -132,8 +190,7 @@
     }
     activeCourse = course;
     state.active = id;
-    topicId = course.topics[0]?.id;
-    taskId = course.tasks.find(task => !getRecords().tasks[task.id])?.id || course.tasks[0]?.id;
+    restoreCoursePosition();
     practiceDrafts = {};
     saveState();
     navigate("home");
@@ -268,33 +325,108 @@
     return window.StudyAttachments.renderSlot(activeCourse.id, key, label);
   }
 
+  function learningHeader(title, status) {
+    return `<header class="learning-header">
+      <div>
+        <p class="eyebrow"><span class="eyebrow-dot"></span> ${escape(activeCourse.title)}</p>
+        <h1>${title}</h1>
+      </div>
+      ${status}
+    </header>`;
+  }
+
+  function renderLessonContents(topics, topic, records) {
+    return `<aside class="lesson-rail" aria-label="Оглавление лекции">
+      <div class="lesson-contents card">
+        <h2 class="lesson-contents-heading">${icon("list")}Оглавление</h2>
+        <button type="button" class="lesson-contents-toggle" data-action="lesson-contents"
+          aria-controls="lesson-contents-body" aria-expanded="${lessonContentsOpen}">
+          ${icon("list")}<span>Оглавление</span>${icon("chevron", "contents-chevron")}
+        </button>
+        <div class="lesson-contents-body ${lessonContentsOpen ? "is-expanded" : ""}" id="lesson-contents-body">
+          <nav aria-labelledby="topics-heading">
+            <h3 id="topics-heading">Темы курса</h3>
+            <ol class="lesson-topic-list">${topics.map(item => `<li>
+              <a class="lesson-topic-link" href="${escape(routeHref("theory", { topic: item.id }))}" ${item.id === topic.id ? 'aria-current="page"' : ""}>
+                ${icon(records[item.id] ? "check" : "circle")}<span>${escape(item.title)}</span>
+                ${records[item.id] ? '<span class="sr-only">Прочитано</span>' : ""}
+              </a>
+            </li>`).join("")}</ol>
+          </nav>
+          ${topic.sections.length ? `<nav class="lesson-section-nav" aria-labelledby="lesson-parts-heading">
+            <h3 id="lesson-parts-heading">В этой теме</h3>
+            <ol class="lesson-section-list">${topic.sections.map((section, index) => `<li>
+              <a data-lesson-part="${index + 1}" href="${escape(routeHref("theory", { topic: topic.id, part: index + 1 }))}">${escape(section.title)}</a>
+            </li>`).join("")}</ol>
+          </nav>` : ""}
+        </div>
+      </div>
+    </aside>`;
+  }
+
+  function setLessonContents(open) {
+    lessonContentsOpen = open;
+    page.querySelector("#lesson-contents-body")?.classList.toggle("is-expanded", open);
+    page.querySelector('[data-action="lesson-contents"]')?.setAttribute("aria-expanded", String(open));
+  }
+
+  function focusLessonPart(index) {
+    const title = page.querySelector(`#lesson-part-${index}`);
+    if (!title) return;
+    setLessonContents(false);
+    for (const link of page.querySelectorAll("[data-lesson-part]")) {
+      if (Number(link.dataset.lessonPart) === index) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    }
+    title.focus({ preventScroll: true });
+    title.scrollIntoView({ block: "start" });
+  }
+
   function renderTheory() {
     const topics = activeCourse.topics;
     const topic = topics.find(item => item.id === topicId) || topics[0];
-    const heading = screenHeading("Лекция", "Читай по одной теме и сразу пробуй вспомнить главное.");
-    if (!topic) return heading + emptyState("В этом курсе пока нет лекции", "Добавь файл с конспектом или вставь текст.");
-    const read = getRecords().topics[topic.id];
-    const next = topics[topics.indexOf(topic) + 1];
-    return heading + `<div class="screen-grid">
-      <article class="content-card card">
-        <div class="question-meta"><span class="pill">${icon("book")}Тема ${topics.indexOf(topic) + 1} из ${topics.length}</span>
-          ${read ? `<span class="pill is-good">${icon("check")}Прочитано</span>` : ""}</div>
-        <h2 data-study-math>${escape(topic.title)}</h2>
-        ${topic.intro ? `<p class="topic-intro" data-study-math>${escape(topic.intro)}</p>` : ""}
-        ${topic.sections.map((section, index) => `<section class="reading-section">
-          <h3 data-study-math>${escape(section.title)}</h3><p class="preserve-lines" data-study-math>${escape(section.text)}</p>
-          ${section.example ? `<div class="lesson-example"><strong>Пример</strong><p class="preserve-lines" data-study-math>${escape(section.example)}</p></div>` : ""}
-          ${studyBlocks(section.blocks)}
-          ${studyPhotos(`topic:${topic.id}:section:${index}`, "Фото к разделу")}
-        </section>`).join("")}
-        <div class="inline-actions lesson-actions">
-          <button type="button" class="button primary" data-action="mark-topic">${icon("check")}${read ? "Снять отметку" : "Отметить прочитанным"}</button>
-          ${next ? `<button type="button" class="button secondary" data-topic="${escape(next.id)}">Следующая тема</button>` : '<a class="button secondary" href="#quiz">К викторине</a>'}
-        </div>
-      </article>
-      <aside class="rail-card card screen-rail"><div class="rail-heading"><span class="rail-icon">${icon("book")}</span><h2>Темы лекции</h2></div>
-        <div class="topic-list">${topics.map(item => `<button type="button" class="topic-button ${item.id === topic.id ? "is-active" : ""}" aria-current="${item.id === topic.id}" data-topic="${escape(item.id)}">
-          ${icon(getRecords().topics[item.id] ? "check" : "circle")}<span>${escape(item.title)}</span></button>`).join("")}</div></aside>
+    if (!topic) return learningHeader("Лекция", "") + emptyState("В этом курсе пока нет лекции", "Добавь файл с конспектом или вставь текст.");
+    const records = getRecords().topics;
+    const read = records[topic.id];
+    const completed = topics.filter(item => records[item.id]).length;
+    const position = topics.indexOf(topic);
+    const previous = topics[position - 1];
+    const next = topics[position + 1];
+    const header = learningHeader("Лекция", `<div class="learning-progress">
+      <span>Прочитано <strong>${completed} из ${topics.length}</strong></span>
+      <progress aria-label="Прочитанные темы" value="${completed}" max="${topics.length}"></progress>
+    </div>`);
+    return `<div class="learning-page lesson-page">
+      ${header}
+      <div class="lesson-layout">
+        ${renderLessonContents(topics, topic, records)}
+        <article class="lesson-paper card" aria-labelledby="lesson-topic-title">
+          <header class="lesson-paper-header">
+            <div class="lesson-paper-meta">
+              <span class="lesson-kicker">${icon("book")} Тема ${position + 1} из ${topics.length}</span>
+              ${read ? `<span class="pill is-good">${icon("check")}Прочитано</span>` : ""}
+            </div>
+            <h2 id="lesson-topic-title" data-study-math>${escape(topic.title)}</h2>
+            ${topic.intro ? `<p data-study-math>${escape(topic.intro)}</p>` : ""}
+          </header>
+          <div class="lesson-paper-body">
+            ${topic.sections.map((section, index) => `<section class="reading-section">
+              <h3 class="lesson-part-title" id="lesson-part-${index + 1}" tabindex="-1" data-study-math>${escape(section.title)}</h3>
+              <p class="preserve-lines" data-study-math>${escape(section.text)}</p>
+              ${section.example ? `<div class="lesson-example"><strong>Пример</strong><p class="preserve-lines" data-study-math>${escape(section.example)}</p></div>` : ""}
+              ${studyBlocks(section.blocks)}
+              ${studyPhotos(`topic:${topic.id}:section:${index}`, "Фото к разделу")}
+            </section>`).join("")}
+          </div>
+          <footer class="lesson-footer">
+            <button type="button" class="button ${read ? "secondary" : "primary"}" data-action="mark-topic">${icon("check")}${read ? "Снять отметку" : "Отметить прочитанным"}</button>
+            <nav aria-label="Соседние темы">
+              ${previous ? `<a class="button ghost" href="${escape(routeHref("theory", { topic: previous.id }))}">Предыдущая</a>` : ""}
+              ${next ? `<a class="button secondary" href="${escape(routeHref("theory", { topic: next.id }))}">Следующая тема</a>` : '<a class="button secondary" href="#quiz">К викторине</a>'}
+            </nav>
+          </footer>
+        </article>
+      </div>
     </div>`;
   }
 
@@ -455,52 +587,143 @@
   }
 
   function taskDraft(id) {
-    return practiceDrafts[id] ||= { hints: 0, revealed: false };
+    return practiceDrafts[id] ||= { hints: 0, revealed: false, panel: "condition" };
+  }
+
+  function taskLink(task, label, style) {
+    return task ? `<a class="button ${style}" href="${escape(routeHref("practice", { task: task.id }))}">${label}</a>` : "";
+  }
+
+  function renderPracticeToolbar(tasks, task, records, previous, next) {
+    return `<div class="practice-toolbar">
+      <div class="practice-picker">
+        <label class="form-label" for="practice-task-select">Выбрать задачу</label>
+        <select class="text-input" id="practice-task-select">${tasks.map((item, index) => `<option value="${escape(item.id)}" ${item.id === task.id ? "selected" : ""}>${index + 1}. ${escape(item.title)}${records[item.id] ? " ✓" : ""}</option>`).join("")}</select>
+      </div>
+      <nav class="practice-prev-next" aria-label="Соседние задачи">
+        ${taskLink(previous, "Предыдущая", "ghost")}
+        ${taskLink(next, "Следующая", "secondary")}
+      </nav>
+    </div>`;
+  }
+
+  function renderPracticeTabs(activePanel) {
+    return `<div class="practice-tabs" role="tablist" aria-label="Части задачи">${practicePanels.map(([id, label]) => `
+      <button type="button" class="practice-tab" role="tab" id="practice-tab-${id}" data-practice-tab="${id}"
+        aria-controls="practice-${id}" aria-selected="${id === activePanel}" tabindex="${id === activePanel ? 0 : -1}">${label}</button>`
+    ).join("")}</div>`;
+  }
+
+  function practicePanelHeading(id, title, symbol) {
+    return `<header class="practice-panel-header">
+      <span class="practice-panel-icon">${icon(symbol)}</span>
+      <h3 id="practice-${id}-title" tabindex="-1">${title}</h3>
+    </header>`;
+  }
+
+  function renderPracticeCondition(task) {
+    return `<section class="practice-panel practice-condition card" id="practice-condition" data-practice-panel role="tabpanel" aria-labelledby="practice-condition-title">
+      ${practicePanelHeading("condition", "Условие", "files")}
+      ${task.scenario ? `<p class="preserve-lines" data-study-math>${escape(task.scenario)}</p>` : ""}
+      ${studyBlocks(task.conditionBlocks)}
+      <div class="practice-request">
+        <strong>Что сделать</strong>
+        <p class="preserve-lines" data-study-math>${escape(task.prompt)}</p>
+      </div>
+      ${studyPhotos(`task:${task.id}:condition`, "Фото к условию")}
+      <button type="button" class="button primary practice-compact-action" data-action="practice-to-answer">К ответу</button>
+    </section>`;
+  }
+
+  function renderPracticeAnswer(task, draft) {
+    return `<section class="practice-panel practice-answer card" id="practice-answer" data-practice-panel role="tabpanel" aria-labelledby="practice-answer-title">
+      ${practicePanelHeading("answer", "Твой ответ", "pen")}
+      <form id="task-form">
+        ${window.StudyAnswers.render(activeCourse.id, task, draft.revealed)}
+        ${!draft.revealed ? `<div class="inline-actions practice-submit">
+          <button class="button primary" type="submit">Сверить с разбором</button>
+          ${draft.hints < task.hints.length ? `<button class="button secondary" type="button" data-action="task-hint">${icon("bulb")}${draft.hints ? "Ещё подсказка" : "Подсказка"}</button>` : ""}
+        </div>` : `<button type="button" class="button secondary practice-compact-action" data-action="practice-to-solution">К разбору</button>`}
+      </form>
+      ${draft.hints && !draft.revealed ? `<div class="hint-box practice-hints" id="practice-hints" tabindex="-1" aria-live="polite">${icon("bulb")}<ol>${task.hints.slice(0, draft.hints).map(hint => `<li data-study-math>${escape(hint)}</li>`).join("")}</ol></div>` : ""}
+      ${studyPhotos(`task:${task.id}:answer`, "Фото своего решения")}
+    </section>`;
+  }
+
+  function renderPracticeSolution(task, draft, solved, next) {
+    const written = draft.revealed ? window.StudyAnswers.readText(activeCourse.id, task).trim() : "";
+    return `<section class="practice-panel practice-solution card ${draft.revealed ? "is-revealed" : "is-locked"}" id="practice-solution" data-practice-panel role="tabpanel" aria-labelledby="practice-solution-title">
+      ${practicePanelHeading("solution", "Разбор решения", draft.revealed ? "book" : "lock")}
+      ${draft.revealed ? `
+        <p class="preserve-lines" data-study-math>${escape(task.solution)}</p>
+        ${studyBlocks(task.solutionBlocks)}
+        ${written ? `<div class="written-answer-feedback"><strong>Текстовая часть ответа</strong>${gradeCopy(grade(written, task.checks))}</div>` : ""}
+        ${studyPhotos(`task:${task.id}:solution`, "Фото к разбору")}
+        <div class="inline-actions practice-solution-actions">
+          <button type="button" class="button ${solved ? "secondary" : "primary"}" data-action="mark-task">${icon("check")}${solved ? "Снять отметку" : "Отметить решённой"}</button>
+          ${next ? taskLink(next, "Следующая задача", "secondary") : '<a class="button secondary" href="#home">К обзору</a>'}
+        </div>` : `<p>Нажми «Сверить с разбором» в разделе с ответом.</p>
+        <button type="button" class="button secondary practice-compact-action" data-action="practice-to-answer">К ответу</button>`}
+    </section>`;
+  }
+
+  function focusPracticeHeading(panel) {
+    const title = page.querySelector(`#practice-${panel}-title`);
+    title?.focus({ preventScroll: true });
+    title?.scrollIntoView({ block: "nearest" });
+  }
+
+  function openPracticePanel(panel, focusPanel = false) {
+    const body = page.querySelector(".practice-body");
+    if (!body) return;
+    taskDraft(taskId).panel = panel;
+    body.dataset.activePanel = panel;
+    for (const tab of page.querySelectorAll("[data-practice-tab]")) {
+      const selected = tab.dataset.practiceTab === panel;
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    }
+    if (focusPanel) focusPracticeHeading(panel);
   }
 
   function renderPractice() {
-    const heading = screenHeading("Практические задачи", "Сначала запиши свой ход решения. Затем открой разбор и сверь шаги.");
     const tasks = activeCourse.tasks;
     const task = tasks.find(item => item.id === taskId) || tasks[0];
-    if (!task) return heading + emptyState("В этом курсе пока нет задач", "Добавь материал с примерами или практическими заданиями.");
+    if (!task) return learningHeader("Задачи", "") + emptyState("В этом курсе пока нет задач", "Добавь материал с примерами или практическими заданиями.");
     const records = getRecords().tasks;
+    const solved = tasks.filter(item => records[item.id]).length;
     const draft = taskDraft(task.id);
-    const next = tasks[tasks.indexOf(task) + 1];
-    const writtenAnswer = window.StudyAnswers.readText(activeCourse.id, task);
-    const result = grade(writtenAnswer, task.checks);
-    return heading + `<div class="screen-grid">
-      <article class="content-card card task-card">
-        <div class="question-meta"><span class="pill">${icon("layers")}${escape(task.difficulty || "Практика")}</span>
-          <span class="pill muted">${escape(topicName(task.topicId))}</span>
-          ${records[task.id] ? `<span class="pill is-good">${icon("check")}Решено</span>` : ""}</div>
-        <h2 data-study-math>${escape(task.title)}</h2>
-        ${task.scenario ? `<div class="task-scenario preserve-lines" data-study-math>${escape(task.scenario)}</div>` : ""}
-        ${studyBlocks(task.conditionBlocks)}
-        ${studyPhotos(`task:${task.id}:condition`, "Фото к условию")}
-        <p class="task-prompt preserve-lines" data-study-math>${escape(task.prompt)}</p>
-        <form id="task-form">
-          ${window.StudyAnswers.render(activeCourse.id, task, draft.revealed)}
-          <div class="inline-actions">
-            ${!draft.revealed ? '<button class="button primary" type="submit">Сверить с разбором</button>' : ""}
-            ${!draft.revealed && draft.hints < task.hints.length ? `<button class="button secondary" type="button" data-action="task-hint">${icon("bulb")}Подсказка${draft.hints ? " ещё" : ""}</button>` : ""}
+    const position = tasks.indexOf(task);
+    const previous = tasks[position - 1];
+    const next = tasks[position + 1];
+    const topic = topicName(task.topicId);
+    return `<div class="learning-page practice-page">
+      ${learningHeader("Задачи", `<div class="learning-progress">
+        <span>Решено <strong>${solved} из ${tasks.length}</strong></span>
+        <progress aria-label="Решённые задачи" value="${solved}" max="${tasks.length}"></progress>
+      </div>`)}
+      ${renderPracticeToolbar(tasks, task, records, previous, next)}
+      <article aria-labelledby="practice-task-title">
+        <header class="practice-title-banner">
+          <div class="practice-banner-copy">
+            <p class="practice-kicker">${icon("layers")} Задача ${position + 1} из ${tasks.length}</p>
+            <h2 id="practice-task-title" data-study-math>${escape(task.title)}</h2>
           </div>
-        </form>
-        ${studyPhotos(`task:${task.id}:answer`, "Фото своего решения")}
-        ${draft.hints && !draft.revealed ? `<div class="hint-box">${icon("bulb")}<ol>${task.hints.slice(0, draft.hints).map(hint => `<li data-study-math>${escape(hint)}</li>`).join("")}</ol></div>` : ""}
-        ${draft.revealed ? `<div class="feedback" aria-live="polite">
-          <strong>Разбор решения</strong><p class="preserve-lines" data-study-math>${escape(task.solution)}</p>
-          ${studyBlocks(task.solutionBlocks)}
-          ${studyPhotos(`task:${task.id}:solution`, "Фото к разбору")}
-          <p>Сверь свой ход решения с образцом.</p>
-          ${writtenAnswer.trim() ? `<div class="written-answer-feedback"><strong>Текстовая часть ответа</strong>${gradeCopy(result)}</div>` : ""}
-        </div><div class="inline-actions">
-          <button type="button" class="button ${records[task.id] ? "secondary" : "primary"}" data-action="mark-task">${icon("check")}${records[task.id] ? "Снять отметку" : "Отметить решённой"}</button>
-          ${next ? `<button class="button secondary" type="button" data-task="${escape(next.id)}">Следующая задача</button>` : '<a class="button secondary" href="#home">К обзору</a>'}
-        </div>` : ""}
+          <div class="practice-tags">
+            ${topic ? `<span class="pill">${escape(topic)}</span>` : ""}
+            <span class="pill muted">${escape(task.difficulty || "Практика")}</span>
+            ${records[task.id] ? `<span class="pill is-good">${icon("check")}Решено</span>` : ""}
+          </div>
+        </header>
+        ${renderPracticeTabs(draft.panel)}
+        <div class="practice-body" data-active-panel="${draft.panel}">
+          ${renderPracticeCondition(task)}
+          <div class="practice-work">
+            ${renderPracticeAnswer(task, draft)}
+            ${renderPracticeSolution(task, draft, records[task.id], next)}
+          </div>
+        </div>
       </article>
-      <aside class="rail-card card screen-rail"><div class="rail-heading"><span class="rail-icon">${icon("layers")}</span><h2>Все задачи</h2></div>
-        <div class="task-list">${tasks.map(item => `<button class="task-button ${item.id === task.id ? "is-active" : ""}" type="button" aria-current="${item.id === task.id}" data-task="${escape(item.id)}">
-          ${icon(records[item.id] ? "check" : "circle")}<span>${escape(item.title)}</span></button>`).join("")}</div></aside>
     </div>`;
   }
 
@@ -755,6 +978,7 @@
       renderChrome();
       focusControl(mobileMenu ? ".sidebar a[aria-current]" : '[data-action="toggle-menu"]');
     },
+    "lesson-contents": () => setLessonContents(!lessonContentsOpen),
     "mark-topic": () => {
       const topics = getRecords().topics;
       topics[topicId] = !topics[topicId];
@@ -774,8 +998,13 @@
     "flip-card": flipFlashcard,
     "task-hint": () => {
       taskDraft(taskId).hints += 1;
-      rerenderAt('[data-action="task-hint"], #task-form button');
+      render();
+      const hints = page.querySelector("#practice-hints");
+      hints?.focus({ preventScroll: true });
+      hints?.scrollIntoView({ block: "nearest" });
     },
+    "practice-to-answer": () => openPracticePanel("answer", true),
+    "practice-to-solution": () => openPracticePanel("solution", true),
     "mark-task": () => {
       const tasks = getRecords().tasks;
       tasks[taskId] = !tasks[taskId];
@@ -787,24 +1016,16 @@
   document.addEventListener("click", event => {
     const trigger = event.target.closest("a, button");
     if (!trigger) return;
-    const { course, topic, task, action, mode, score, source, removeFile, quizFormat } = trigger.dataset;
+    const { course, action, mode, score, source, removeFile, quizFormat, practiceTab } = trigger.dataset;
     const href = trigger.getAttribute("href");
-    if (href?.startsWith("#") && Object.hasOwn(routes, href.slice(1))) {
+    if (href?.startsWith("#") && parseRoute(href)) {
       if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
-      navigate(href.slice(1));
+      navigate(href);
     } else if (course) {
       switchCourse(course);
-    } else if (topic) {
-      topicId = topic;
-      render();
-      page.focus({ preventScroll: true });
-      window.scrollTo(0, 0);
-    } else if (task) {
-      taskId = task;
-      render();
-      page.focus({ preventScroll: true });
-      window.scrollTo(0, 0);
+    } else if (practiceTab) {
+      openPracticePanel(practiceTab);
     } else if (action) {
       actions[action]?.(trigger);
     } else if (quizFormat) {
@@ -843,6 +1064,10 @@
       changeQuizScope(quiz.mode, event.target.value);
       rerenderAt("#quiz-topic");
     }
+    if (event.target.id === "practice-task-select") {
+      navigate(routeHref("practice", { task: event.target.value }), { focus: false });
+      focusControl("#practice-task-select");
+    }
     if (event.target.id === "study-files") {
       resetImportConfirmation();
       addFiles(event.target.files);
@@ -864,9 +1089,28 @@
       }
     }
     if (form.id === "task-form") {
-      taskDraft(taskId).revealed = true;
-      rerenderAt('[data-action="mark-task"]');
+      const draft = taskDraft(taskId);
+      draft.revealed = true;
+      draft.panel = "solution";
+      render();
+      focusPracticeHeading("solution");
     }
+  });
+
+  page.addEventListener("keydown", event => {
+    const tab = event.target.closest("[data-practice-tab]");
+    if (!tab) return;
+    const tabs = [...tab.parentElement.querySelectorAll("[data-practice-tab]")];
+    const position = tabs.indexOf(tab);
+    let next;
+    if (event.key === "ArrowRight") next = tabs[(position + 1) % tabs.length];
+    if (event.key === "ArrowLeft") next = tabs[(position + tabs.length - 1) % tabs.length];
+    if (event.key === "Home") next = tabs[0];
+    if (event.key === "End") next = tabs.at(-1);
+    if (!next) return;
+    event.preventDefault();
+    openPracticePanel(next.dataset.practiceTab);
+    next.focus();
   });
 
   for (const eventName of ["dragover", "dragleave", "drop"]) {
@@ -898,11 +1142,9 @@
 
   window.addEventListener("hashchange", () => {
     if (location.hash === "#main-content") return;
-    view = parseRoute();
-    mobileMenu = false;
-    render();
-    window.scrollTo(0, 0);
+    showRoute(parseRoute(location.hash) || parseRoute("home"));
   });
 
-  render();
+  restoreCoursePosition();
+  showRoute(parseRoute(location.hash) || parseRoute("home"), false);
 })();
